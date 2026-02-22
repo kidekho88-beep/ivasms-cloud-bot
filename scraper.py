@@ -1,82 +1,42 @@
-import sys, time, json, os, re, requests
-from playwright.sync_api import sync_playwright
+import time
+import threading
 
-RUN_EMAIL = sys.argv[1] if len(sys.argv) > 1 else None
-from config import BOT_TOKEN
+RUNNING = {}
+LOCK = threading.Lock()
 
-LOGIN_URL = "https://www.ivasms.com/login"
-DASHBOARD_URL = "https://www.ivasms.com/portal/live/my_sms"
+def start_scraper_for_account(acc, bot, chat_id):
+    email = acc["email"]
 
-def load_json(p, default):
-    if not os.path.exists(p):
-        with open(p, "w") as f: json.dump(default, f)
-        return default
+    with LOCK:
+        if RUNNING.get(email):
+            bot.send_message(chat_id, f"⚠️ Already running:\n<code>{email}</code>")
+            return
+        RUNNING[email] = True
+
+    bot.send_message(chat_id, f"🚀 Started scraper for:\n<code>{email}</code>")
+
     try:
-        with open(p, "r") as f:
-            d = f.read().strip()
-            return json.loads(d) if d else default
-    except:
-        return default
-
-def send_telegram(chat_id, text):
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=20)
+        while RUNNING.get(email):
+            # এখানে পরে real OTP scraping logic বসানো যাবে
+            print(f"[SCRAPER] Running for {email}")
+            time.sleep(15)
     except Exception as e:
-        print("Telegram error:", e)
+        print(f"[SCRAPER ERROR] {email} -> {e}")
+    finally:
+        with LOCK:
+            RUNNING[email] = False
+        bot.send_message(chat_id, f"❌ Scraper stopped:\n<code>{email}</code>")
 
-def extract_otp(text):
-    m = re.findall(r"\b\d{4,8}\b", text)
-    return m[0] if m else None
+def stop_all_scrapers():
+    with LOCK:
+        for k in RUNNING.keys():
+            RUNNING[k] = False
 
-seen = set()
-
-def main():
-    accounts = load_json("accounts.json", [])
-    groups = load_json("groups.json", [])
-    if RUN_EMAIL:
-        accounts = [a for a in accounts if a["email"] == RUN_EMAIL]
-
-    if not accounts:
-        print("No accounts.")
-        return
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = browser.new_context()
-        page = context.new_page()
-
-        for acc in accounts:
-            print("🔐 Login:", acc["email"])
-            page.goto(LOGIN_URL, timeout=120000)
-            page.wait_for_timeout(30000)  # Cloudflare human-like wait
-
-            page.fill('input[name="email"]', acc["email"])
-            page.fill('input[name="password"]', acc["pass"])
-            page.click('button[type="submit"]')
-            page.wait_for_timeout(30000)
-
-            page.goto(DASHBOARD_URL, timeout=120000)
-            page.wait_for_timeout(15000)
-
-            print("📄 Title:", page.title())
-
-            while True:
-                rows = page.query_selector_all("table tbody tr")
-                for r in rows:
-                    tds = r.query_selector_all("td")
-                    if not tds:
-                        continue
-                    msg = tds[-1].inner_text().strip()
-                    num = tds[1].inner_text().strip() if len(tds) > 1 else "N/A"
-                    otp = extract_otp(msg)
-                    if otp and otp not in seen:
-                        seen.add(otp)
-                        out = f"🔔 New OTP\n\n📞 {num}\n💬 {msg}\n🔑 OTP: {otp}"
-                        print(out)
-                        for gid in groups:
-                            send_telegram(gid, out)
-                time.sleep(10)
-
-if __name__ == "__main__":
-    main()
+def get_status():
+    with LOCK:
+        if not RUNNING:
+            return "No scrapers running"
+        txt = ""
+        for k, v in RUNNING.items():
+            txt += f"{k} → {'🟢 Running' if v else '🔴 Stopped'}\n"
+        return txt
