@@ -1,96 +1,83 @@
 import os
 import time
 import threading
-import telebot
-from telebot import types
+from telebot import TeleBot, types
+from dotenv import load_dotenv
 
-from scraper import start_scraper_for_account, stop_all_scrapers, get_status
+# Load env (Railway will provide env vars automatically)
+load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMINS = os.getenv("ADMINS", "")
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not set in environment variables")
+    raise ValueError("BOT_TOKEN not set in environment")
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-ACCOUNTS = []  # [{"email": "...", "pass": "..."}]
+# Parse admin IDs
+ADMIN_IDS = []
+if ADMINS:
+    try:
+        ADMIN_IDS = [int(x.strip()) for x in ADMINS.split(",") if x.strip().isdigit()]
+    except Exception:
+        ADMIN_IDS = []
 
-# ====== Commands ======
+# ---------- Helpers ----------
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
-@bot.message_handler(commands=["start"])
+# ---------- Commands ----------
+@bot.message_handler(commands=['start'])
 def start_cmd(message):
-    bot.reply_to(
-        message,
-        "🤖 <b>IVASMS Control Panel Bot Started</b>\n\n"
-        "/addacc <email> <pass>\n"
-        "/rmvacc <email>\n"
-        "/myaccount\n"
-        "/run\n"
-        "/stop\n"
-        "/status"
+    text = (
+        "<b>🤖 IVASMS Cloud Bot</b>\n\n"
+        "Welcome! This bot is running on Railway.\n\n"
+        "Available commands:\n"
+        "• /start - Show this message\n"
+        "• /status - Bot status\n\n"
+        "If you face any issue, contact admin."
     )
+    bot.reply_to(message, text)
 
-@bot.message_handler(commands=["addacc"])
-def add_account(message):
-    try:
-        _, email, password = message.text.split(maxsplit=2)
-        ACCOUNTS.append({"email": email, "pass": password})
-        bot.reply_to(message, f"✅ Account added:\n<code>{email}</code>")
-    except:
-        bot.reply_to(message, "❌ Usage:\n/addacc email password")
-
-@bot.message_handler(commands=["rmvacc"])
-def remove_account(message):
-    try:
-        _, email = message.text.split(maxsplit=1)
-        global ACCOUNTS
-        ACCOUNTS = [a for a in ACCOUNTS if a["email"] != email]
-        bot.reply_to(message, f"🗑️ Removed:\n<code>{email}</code>")
-    except:
-        bot.reply_to(message, "❌ Usage:\n/rmvacc email")
-
-@bot.message_handler(commands=["myaccount"])
-def my_accounts(message):
-    if not ACCOUNTS:
-        bot.reply_to(message, "❌ No accounts added")
-        return
-
-    txt = "📦 <b>Your Accounts:</b>\n\n"
-    for acc in ACCOUNTS:
-        txt += f"• <code>{acc['email']}</code>\n"
-    bot.reply_to(message, txt)
-
-@bot.message_handler(commands=["run"])
-def run_all(message):
-    if not ACCOUNTS:
-        bot.reply_to(message, "❌ No accounts to run")
-        return
-
-    for acc in ACCOUNTS:
-        threading.Thread(target=start_scraper_for_account, args=(acc, bot, message.chat.id)).start()
-
-    bot.reply_to(message, "🚀 Scraper started for all accounts")
-
-@bot.message_handler(commands=["stop"])
-def stop_all(message):
-    stop_all_scrapers()
-    bot.reply_to(message, "🛑 All scrapers stopped")
-
-@bot.message_handler(commands=["status"])
+@bot.message_handler(commands=['status'])
 def status_cmd(message):
-    s = get_status()
-    bot.reply_to(message, f"📊 <b>Status:</b>\n{s}")
+    uptime = int(time.time() - START_TIME)
+    text = (
+        "✅ <b>Bot Status: Online</b>\n\n"
+        f"⏱ Uptime: <code>{uptime}</code> seconds\n"
+        f"👤 Your ID: <code>{message.from_user.id}</code>\n"
+    )
+    bot.reply_to(message, text)
 
-# ====== Safe polling loop ======
+@bot.message_handler(commands=['admin'])
+def admin_cmd(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "❌ You are not authorized.")
+        return
 
-def start_bot():
+    text = (
+        "🔐 <b>Admin Panel</b>\n\n"
+        "Commands:\n"
+        "• /status - Check bot status\n"
+    )
+    bot.reply_to(message, text)
+
+# ---------- Fallback ----------
+@bot.message_handler(func=lambda m: True)
+def all_messages(message):
+    bot.reply_to(message, "❓ Unknown command. Use /start to see options.")
+
+# ---------- Runner ----------
+def run_bot():
     while True:
         try:
-            print("🤖 Bot polling started...")
-            bot.infinity_polling(skip_pending=True, timeout=30)
+            print("Bot started polling...")
+            bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
         except Exception as e:
-            print("⚠️ Bot crashed, restarting in 10s:", e)
-            time.sleep(10)
+            print("Bot crashed, restarting in 5 seconds:", e)
+            time.sleep(5)
 
 if __name__ == "__main__":
-    start_bot()
+    START_TIME = time.time()
+    run_bot()
