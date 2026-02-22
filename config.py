@@ -1,2 +1,13 @@
-BOT_TOKEN = "8492827103:AAFM9GE0EXFQgqEb81lbpFG1ZxSKGUNATB4"
-ADMINS = [6260167422]  # তোমার Telegram user_id
+import os
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Railway Variables থেকে আসবে
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN not set in environment")
+
+ADMINS = []
+_admins = os.getenv("ADMINS", "")
+if _admins:
+    try:
+        ADMINS = [int(x.strip()) for x in _admins.split(",") if x.strip().isdigit()]
+    except:
+        ADMINS = []
