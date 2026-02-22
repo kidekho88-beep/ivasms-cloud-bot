@@ -1,91 +1,112 @@
-import sys, time, json, os, re, requests, traceback
+import sys, os, json, time, re, traceback
+from playwright.sync_api import sync_playwright
+import requests
 from config import BOT_TOKEN
 
 RUN_EMAIL = sys.argv[1] if len(sys.argv) > 1 else None
 
-IVASMS_API_URL = "https://www.ivasms.com/api/live_sms"  # example (তুমি আসল endpoint বসাবে)
-SESSION_FILE = "session.json"
-POLL_INTERVAL = 10
-seen_otps = set()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ACCOUNTS_FILE = os.path.join(BASE_DIR, "accounts.json")
+GROUPS_FILE = os.path.join(BASE_DIR, "groups.json")
+SESSIONS_FILE = os.path.join(BASE_DIR, "sessions.json")
+
+LOGIN_URL = "https://www.ivasms.com/login"
+DASHBOARD_URL = "https://www.ivasms.com/portal/live/my_sms"
+
+POLL_INTERVAL = 8
 
 def load_json(p, default):
     if not os.path.exists(p):
         with open(p, "w") as f: json.dump(default, f)
         return default
     try:
-        with open(p, "r") as f:
-            d = f.read().strip()
-            return json.loads(d) if d else default
-    except:
-        return default
+        with open(p, "r") as f: return json.load(f)
+    except: return default
 
 def save_json(p, data):
-    with open(p, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(p, "w") as f: json.dump(data, f, indent=2)
 
-def send(chat_id, txt):
+def send(chat_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": txt}, timeout=20)
+    requests.post(url, data={"chat_id": chat_id, "text": text}, timeout=20)
 
-def extract_otp(t):
-    m = re.findall(r"\b\d{4,8}\b", t)
+def extract_otp(msg):
+    m = re.findall(r"\b\d{4,8}\b", msg)
     return m[0] if m else None
-
-def detect_tags(number):
-    if number.startswith("+977"): return "🇳🇵", "NP"
-    if number.startswith("+880"): return "🇧🇩", "BD"
-    if number.startswith("+91"):  return "🇮🇳", "IN"
-    return "🌍", "XX"
 
 def detect_service(msg):
     m = msg.lower()
     if "whatsapp" in m: return "WS"
     if "telegram" in m: return "TG"
-    if "google" in m:   return "GG"
+    if "google" in m: return "GG"
+    if "facebook" in m: return "FB"
     return "OTP"
 
+def detect_country(num):
+    if num.startswith("+880"): return "🇧🇩", "BD"
+    if num.startswith("+91"): return "🇮🇳", "IN"
+    if num.startswith("+84"): return "🇻🇳", "VN"
+    return "🌍", "XX"
+
+def login_and_save(context, email, password):
+    page = context.new_page()
+    page.goto(LOGIN_URL, timeout=120000)
+    page.fill("input[name=email]", email)
+    page.fill("input[name=password]", password)
+    page.click("button[type=submit]")
+    page.wait_for_url("**/portal/**", timeout=120000)
+    storage = context.storage_state()
+    sess = load_json(SESSIONS_FILE, {})
+    sess[email] = storage
+    save_json(SESSIONS_FILE, sess)
+    page.close()
+
+def restore_context(browser, email):
+    sess = load_json(SESSIONS_FILE, {})
+    state = sess.get(email)
+    if not state: return None
+    return browser.new_context(storage_state=state)
+
 def main():
-    print("🚀 OTP Worker started for:", RUN_EMAIL)
-    while True:
-        try:
-            groups = load_json("groups.json", [])
-            session = load_json(SESSION_FILE, {})
-            cookie = session.get(RUN_EMAIL)
+    accounts = load_json(ACCOUNTS_FILE, [])
+    groups = load_json(GROUPS_FILE, [])
+    if RUN_EMAIL:
+        accounts = [a for a in accounts if a["email"] == RUN_EMAIL]
 
-            if not cookie:
-                print("⛔ No cookie for:", RUN_EMAIL)
-                time.sleep(10)
-                continue
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        for acc in accounts:
+            ctx = restore_context(browser, acc["email"])
+            if not ctx:
+                ctx = browser.new_context()
+                login_and_save(ctx, acc["email"], acc["pass"])
+            page = ctx.new_page()
+            page.goto(DASHBOARD_URL, timeout=120000)
 
-            headers = {"Cookie": cookie, "User-Agent": "Mozilla/5.0"}
-            r = requests.get(IVASMS_API_URL, headers=headers, timeout=30)
-
-            if r.status_code != 200:
-                print("❌ API Error:", r.status_code)
-                time.sleep(10)
-                continue
-
-            data = r.json()  # এখানে IVASMS API অনুযায়ী পার্স করবে
-
-            for item in data.get("messages", []):
-                number = item.get("number","")
-                msg = item.get("message","")
-                otp = extract_otp(msg)
-                if otp and otp not in seen_otps:
-                    seen_otps.add(otp)
-                    flag, cc = detect_tags(number)
-                    svc = detect_service(msg)
-                    txt = f"{flag} #{svc} #{cc}\n{number}\n\n{otp}"
-                    for g in groups:
-                        send(g, txt)
-                    print("📩 OTP sent:", otp)
-
-            time.sleep(POLL_INTERVAL)
-
-        except Exception as e:
-            print("❌ Worker error:", e)
-            traceback.print_exc()
-            time.sleep(15)
+            seen = set()
+            while True:
+                rows = page.query_selector_all("table tbody tr")
+                for r in rows:
+                    tds = r.query_selector_all("td")
+                    if len(tds) < 3: continue
+                    number = tds[1].inner_text().strip()
+                    msg = tds[-1].inner_text().strip()
+                    otp = extract_otp(msg)
+                    if otp and otp not in seen:
+                        seen.add(otp)
+                        flag, cc = detect_country(number)
+                        svc = detect_service(msg)
+                        text = f"{flag} #{svc} #{cc}\n{number}\n\n{otp}"
+                        for g in groups:
+                            send(g, text)
+                time.sleep(POLL_INTERVAL)
+                page.reload()
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print("❌ Error:", e)
+            traceback.print_exc()
+            time.sleep(20)
