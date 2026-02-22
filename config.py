@@ -1,13 +1,9 @@
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Railway Variables থেকে আসবে
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not set in environment")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMINS = list(map(int, os.getenv("ADMINS", "").split(","))) if os.getenv("ADMINS") else []
 
-ADMINS = []
-_admins = os.getenv("ADMINS", "")
-if _admins:
-    try:
-        ADMINS = [int(x.strip()) for x in _admins.split(",") if x.strip().isdigit()]
-    except:
-        ADMINS = []
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN not set")
+if not ADMINS:
+    raise ValueError("ADMINS not set")
